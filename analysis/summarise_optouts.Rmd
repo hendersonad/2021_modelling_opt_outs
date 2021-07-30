@@ -1,0 +1,228 @@
+---
+title: "Summarise GDPDR opt-outs"
+subtitle: "https://digital.nhs.uk/data-and-information/publications/statistical/national-data-opt-out/july-2021"
+author: "Alasdair Henderson"
+date: "30/07/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+
+p_load(tidyverse)
+p_load(ggplot2)
+p_load(here)
+p_load(gt)
+p_load(rgdal)
+p_load(skimr)
+p_load(maptools)
+if (!require(gpclib)) install.packages("gpclib", type="source")
+gpclibPermit()
+theme_set(theme_minimal())
+
+age_gen <- read_csv(here("data/NDOP_age_gen_Jul_2021.csv"))
+reg <- read_csv(here("data/NDOP_reg_geo_Jul_2021.csv"))
+res <- read_csv(here("data/NDOP_res_geo_Jul_2021.csv"))
+
+ccg_shape <- readOGR(here::here("data/Clinical_Commissioning_Groups_(April_2020)_EN_BFC_V2/Clinical_Commissioning_Groups_(April_2020)_EN_BFC_V2.shp"))
+
+regions_shape <- readOGR(here::here("data/NHS_England_Regions_(April_2019)_EN_BFC/NHS_England_Regions_(April_2019)_EN_BFC.shp"))
+
+```
+
+## Opt outs over time 
+
+Note the big peak in opt outs across gender and age-bands in July 2021
+
+```{r}
+age_gen_edited <- age_gen %>%
+  mutate_if(is.character, ~stringr::str_to_lower(.)) %>%
+  janitor::clean_names() %>%
+  filter(gender == "male" | gender == "female") %>%
+  filter(!str_detect(age_band, "all")) %>%
+  mutate_at("age_band", ~ifelse(. == "oct-19", "10-19", .)) %>%
+  mutate(age_band = factor(age_band)) %>% 
+  mutate_at("ach_date", ~lubridate::as_date(., format = "%d/%m/%Y"))
+
+age_gen_edited %>%
+  skim()
+
+age_gen_edited %>%
+  mutate(age_band_bigger = 
+  fct_collapse(age_band, 
+               "<20" = c("0-9", "10-19"),
+               "20-40" = c("20-29", "30-39"),
+               "40-60" = c("40-49", "50-59"),
+               "60+" = c("60-69", "70-79", "80-89", "90+")
+               )
+  ) %>%
+  group_by(ach_date, gender, age_band_bigger) %>% 
+  summarise(opt_out = sum(opt_out), list_size = sum(list_size), .groups = "keep") %>% 
+  mutate(rate = (opt_out/list_size)*100) %>%
+  ggplot(aes(ach_date, rate, colour = age_band_bigger)) +
+  geom_line() +
+  labs(y = "drop out percent", x = "Date", colour = "Age group") +
+  facet_wrap(~gender, ncol = 1) 
+
+```
+
+So the percentage of drop outs has changed over time, but the denominator (`list_size`) has not
+
+```{r}
+age_gen_edited <- age_gen %>%
+  mutate_if(is.character, ~stringr::str_to_lower(.)) %>%
+  janitor::clean_names() %>%
+  filter(gender == "male" | gender == "female") %>%
+  filter(!str_detect(age_band, "all")) %>%
+  mutate_at("age_band", ~ifelse(. == "oct-19", "10-19", .)) %>%
+  mutate(age_band = factor(age_band)) %>% 
+  mutate_at("ach_date", ~lubridate::as_date(., format = "%d/%m/%Y"))
+
+age_gen_edited %>%
+  ggplot(aes(ach_date, list_size, colour = age_band)) +
+  geom_line() +
+  facet_wrap(~gender, ncol = 1)
+```
+
+And the opt out count is the sum to date not the count in that month! 
+```{r}
+age_gen_edited %>%
+  ggplot(aes(ach_date, opt_out, colour = age_band)) +
+  geom_line() +
+  facet_wrap(~gender, ncol = 1) 
+```
+
+So we just need to take the most recent data
+### Gender
+
+```{r}
+## Gender
+age_gen_denom <- age_gen_edited %>% 
+  filter(ach_date == min(ach_date)) %>% 
+  group_by(gender) %>%
+  summarise(denom = sum(list_size)) 
+gender_summ <- age_gen_edited %>%
+  group_by(gender) %>%
+  summarise(opt_out = sum(opt_out)) %>%
+  left_join(age_gen_denom, by = "gender") %>%
+  mutate(pc = (opt_out/denom)*100)
+
+gt(gender_summ) %>%
+  opt_align_table_header(align = "left") %>%
+  fmt_number(columns = 2:3, decimals = 1, drop_trailing_zeros = T) %>%
+  fmt_percent(columns = 4, decimals = 1, pattern = "({x})", scale_values = F)
+```
+
+Higher percentage of female opt outs (`r gender_summ$pc[gender_summ$gender == "female"] %>% round(digits = 1)`) than male (`r gender_summ$pc[gender_summ$gender == "male"] %>% round(digits = 1)`). 
+
+### Age band
+```{r}
+
+## Age_band  
+age_gen_denom <- age_gen_edited %>% 
+  filter(ach_date == min(ach_date)) %>% 
+  group_by(age_band) %>%
+  summarise(denom = sum(list_size)) 
+age_band_summ <- age_gen_edited %>%
+  group_by(age_band) %>%
+  summarise(opt_out = sum(opt_out)) %>%
+  left_join(age_gen_denom, by = "age_band") %>%
+  mutate(pc = (opt_out/denom)*100)
+gt(age_band_summ) %>%
+  opt_align_table_header(align = "left") %>%
+  fmt_number(columns = 2:3, decimals = 1, drop_trailing_zeros = T) %>%
+  fmt_percent(columns = 4, decimals = 1, pattern = "({x})", scale_values = F)
+```
+
+Highest in `r arrange(age_band_summ, -pc) %>% head(n=3) %>% pull(age_band)` groups.   
+
+## What about location? 
+
+```{r}
+cat("\n\nNDOP_reg_geo_Jul_2021.csv\n")
+reg %>% 
+  janitor::clean_names() %>%
+  mutate_at("ach_date", ~lubridate::as_date(., format = "%d/%m/%Y")) %>%
+  skim()
+cat("\n\nNDOP_res_geo_Jul_2021.csv\n")
+res %>% 
+  janitor::clean_names() %>%
+  mutate_at("ach_date", ~lubridate::as_date(., format = "%d/%m/%Y")) %>%
+  skim()
+```
+Res is huge (down to lsoa) and doesn't seem to include `list_size` so hard to make proportions. So going to use `reg` file with CCG info.
+
+Again, list_size is fairly constant over time, and the largest 10 CCGs are:
+```{r}
+reg_edited <- reg %>% 
+  janitor::clean_names() %>%
+  mutate_at("ach_date", ~lubridate::as_date(., format = "%d/%m/%Y")) %>%
+  select(ach_date, ons_ccg_code, ccg_name, opt_out, list_size) 
+#glimpse(reg_edited) 
+
+reg_edited %>% 
+  group_by(ach_date, ccg_name) %>%
+  summarise(list_size=sum(list_size), .groups = "keep") %>%
+  ggplot(aes(ach_date, list_size, colour = ccg_name)) +
+  geom_line() +
+  guides(colour = "none")
+
+reg_denom <- reg_edited %>% 
+  filter(ach_date==min(ach_date)) %>%
+  group_by(ons_ccg_code, ccg_name) %>% 
+  summarise(list_size = sum(list_size), .groups = "keep") %>% 
+  ungroup() %>%
+  arrange(-list_size)
+
+reg_denom %>%
+  slice(1:10) %>%
+  gt(reg_denom) %>%
+  fmt_number(columns = 3, decimals = 1, drop_trailing_zeros = T)
+```
+
+And the biggest 10 in terms of opt out rate are: 
+```{r}
+reg_edited %>% 
+  group_by(ach_date, ccg_name) %>% 
+  summarise(opt_outs = sum(opt_out, na.rm = T)) %>% 
+  ggplot(aes(ach_date, opt_outs, colour = ccg_name)) +
+  geom_line() +
+  guides(col = "none")
+
+ccg_summ <- reg_edited %>% 
+  group_by(ons_ccg_code, ccg_name) %>% 
+  summarise(opt_out = sum(opt_out, na.rm = T), .groups = "keep") %>% 
+  left_join(reg_denom, by = c("ons_ccg_code", "ccg_name")) %>% 
+  mutate(pc = (opt_out/list_size)*100)
+
+
+age_band_summ <- age_gen_edited %>%
+  group_by(age_band) %>%
+  summarise(opt_out = sum(opt_out)) %>%
+  left_join(age_gen_denom, by = "age_band") %>%
+  mutate(pc = (opt_out/denom)*100)
+gt(age_band_summ) %>%
+  opt_align_table_header(align = "left") %>%
+  fmt_number(columns = 2:3, decimals = 1, drop_trailing_zeros = T) %>%
+  fmt_percent(columns = 4, decimals = 1, pattern = "({x})", scale_values = F)
+```
+
+```
+
+```{r}
+skim(ccg_shape@data)
+glimpse(ccg_shape@data)
+class(ccg_shape)
+glimpse(regions_shape@data)
+regions_map <- broom::tidy(ccg_shape, region = "ccg20nm")
+map <- ggplot() +
+  geom_polygon(data = regions_map, aes(x=long, y=lat, group = group), colour=1, fill=NA, lwd = 0.2)
+map + theme_void()
+```
+
+A blank map is good and all but let's make it prettier
+
+```{r}
+opt_out_plot <- merge(regions_map, )
+```
+
