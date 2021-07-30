@@ -2,8 +2,12 @@
 .Rhistory
 .RData
 .Ruserdata
+
+*.html
+
+# map files
 *.cpg
-*.dbp
+*.dbf
 *.prj
 *.shx
 *.xml
