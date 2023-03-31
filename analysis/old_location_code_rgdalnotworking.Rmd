@@ -1,0 +1,112 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+## What about location? 
+
+```{r, include = F}
+cat("\n\nNDOP_reg_geo_Apr_2022.csv\n")
+reg %>% 
+  janitor::clean_names() %>%
+  mutate_at("ach_date", ~lubridate::as_date(., format = "%d/%m/%Y")) %>%
+  skim()
+cat("\n\nNDOP_res_geo_Apr_2022.csv\n")
+res %>% 
+  janitor::clean_names() %>%
+  mutate_at("ach_date", ~lubridate::as_date(., format = "%d/%m/%Y")) %>%
+  skim()
+```
+Res is huge (down to lsoa) and doesn't seem to include `list_size` so hard to make proportions. So going to use `reg` file with CCG info.
+
+Again, list_size is fairly constant over time
+```{r}
+reg_edited <- reg %>% 
+  janitor::clean_names() %>%
+  mutate_at("ach_date", ~lubridate::as_date(., format = "%d/%m/%Y")) %>%
+  select(ach_date, ons_ccg_code, ccg_name, opt_out, list_size) 
+#glimpse(reg_edited) 
+
+reg_edited %>% 
+  group_by(ach_date, ccg_name) %>%
+  summarise(list_size=sum(list_size), .groups = "keep") %>%
+  ggplot(aes(ach_date, list_size, colour = ccg_name)) +
+  geom_line() +
+  guides(colour = "none")
+```
+
+And the largest 10 CCGs are:
+
+```{r}
+reg_denom <- reg_edited %>% 
+  group_by(ons_ccg_code, ccg_name) %>% 
+  filter(ach_date==max(ach_date)) %>%
+  summarise(list_size = sum(list_size), .groups = "keep") %>% 
+  ungroup() %>%
+  arrange(-list_size)
+
+reg_denom %>%
+  slice(1:10) %>%
+  gt(reg_denom) %>%
+  fmt_number(columns = 3, decimals = 1, drop_trailing_zeros = T)
+```
+
+And the 10 with the biggest opt_out rates are: 
+
+```{r}
+reg_summ <- reg_edited %>% 
+  group_by(ccg_name, ons_ccg_code) %>% 
+  filter(ach_date == max(ach_date)) %>% 
+  summarise(opt_outs = sum(opt_out, na.rm = T), list_size = sum(list_size, na.rm = T), .groups = "keep")  %>% 
+  filter(list_size>0) %>% 
+  mutate(pc = (opt_outs/list_size)*100) %>%
+  arrange(-pc) %>%
+  ungroup()
+
+reg_summ %>%
+  arrange(-pc) %>%
+  slice(1:10) %>% 
+  select(ccg_name, pc) %>%
+  gt(reg_summ) %>%
+  fmt_percent(columns = 2, decimals = 1, pattern = "({x})", scale_values = F)
+  
+```
+
+```{r, include = FALSE}
+skim(ccg_shape@data)
+glimpse(ccg_shape@data)
+class(ccg_shape)
+
+regions_map <- broom::tidy(ccg_shape, region = "ccg20cd")
+
+#map <- ggplot() +
+#  geom_polygon(data = regions_map, aes(x=long, y=lat, group = group), colour=1, fill=NA, lwd = 0.2)
+
+#map + theme_void()
+```
+
+A map of percentage drop outs by CCG
+
+```{r}
+reg_map <- reg_summ %>%  
+  rename(id = ons_ccg_code)
+
+map_ons <- merge(regions_map, reg_map, by="id", all.x=T, a..ly=F)
+#head(map_ons)
+
+# test <- map_ons %>%
+#   filter(id == "E38000004")
+# 
+# ggplot() +
+#   geom_polygon(data = test, aes(x=long, y=lat, group = group, fill = pc), colour=1, lwd = 0.2) +
+#   labs(fill = "% opt out by CCG") +
+#   scale_fill_viridis_c(alpha = 0.6, option = "inferno")
+
+map <- ggplot() +
+  geom_polygon(data = map_ons, aes(x=long, y=lat, group = group, fill = pc), colour=1, lwd = 0.2) +
+  labs(fill = "% opt out by CCG") +
+  scale_fill_viridis_c(alpha = 0.6, option = "inferno")
+map + theme_void()
+
+```
+
